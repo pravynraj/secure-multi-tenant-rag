@@ -1,448 +1,105 @@
-# secure-multi-tenant-rag
-Secure multi-tenant RAG API with JWT authentication, tenant-isolated Qdrant retrieval, PostgreSQL ACL validation, and append-only retrieval auditing.
 # Secure Multi-Tenant RAG
 
-A security-focused **Retrieval-Augmented Generation (RAG)** API built with **FastAPI**, designed to enforce tenant isolation and document-level access control throughout the retrieval pipeline.
+A FastAPI starter application demonstrating JWT authentication, tenant-scoped Qdrant filtering, a second PostgreSQL-backed ACL check, and append-only retrieval auditing.
 
-The system combines **JWT authentication**, **tenant-scoped Qdrant filtering**, **PostgreSQL-backed ACL verification**, and **append-only retrieval auditing** to prevent unauthorized documents from reaching the LLM context.
-
-## Overview
-
-Traditional RAG systems can retrieve relevant information without sufficiently considering **who is allowed to access that information**.
-
-This project addresses that problem by making authorization part of the retrieval pipeline.
-
-### Security Flow
+## Security flow
 
 ```text
-User
-  │
-  ▼
-JWT Authentication
-  │
-  ▼
-Live User & Tenant Validation
-  │
-  ▼
-Qdrant Tenant + ACL Pre-Filter
-  │
-  ▼
-PostgreSQL ACL Verification
-  │
-  ▼
-Audit Event
-  │
-  ▼
-Authorized Context
-  │
-  ▼
-LLM
+User -> JWT -> live user/tenant validation -> Qdrant ACL pre-filter
+     -> PostgreSQL ACL verification -> audit write -> configured LLM
 ```
 
-The caller does not provide a tenant ID to the document or chat APIs. Tenant scope is derived from the authenticated database user.
+The caller never supplies a tenant ID to the document or chat APIs. Tenant scope comes from the authenticated database user. JWT role claims are validated, but current database roles are used for authorization so role revocation takes effect without waiting for token expiry.
 
-## Key Features
+## Run locally on Windows
 
-* JWT-based authentication
-* Multi-tenant architecture
-* Tenant-isolated document retrieval
-* Qdrant vector database
-* Role-based access control
-* User-specific ACL support
-* PostgreSQL-backed authorization verification
-* Retrieval auditing
-* Protection against stale vector-store permissions
-* Document ingestion and embedding
-* LLM-compatible chat endpoint
-* Docker Compose deployment
-* Local SQLite development mode
-* FastAPI automatic Swagger documentation
-* Unit tests for authorization and tenant isolation
-
-## Technology Stack
-
-| Technology            | Purpose                                  |
-| --------------------- | ---------------------------------------- |
-| Python                | Core programming language                |
-| FastAPI               | REST API framework                       |
-| SQLAlchemy            | Database ORM                             |
-| PostgreSQL            | Persistent database and ACL verification |
-| SQLite                | Local development database               |
-| Qdrant                | Vector database                          |
-| Sentence Transformers | Text embeddings                          |
-| PyJWT                 | JWT authentication                       |
-| Passlib / bcrypt      | Password hashing                         |
-| Docker                | Containerization                         |
-| Docker Compose        | Multi-service orchestration              |
-| OpenAI-compatible API | LLM integration                          |
-| Uvicorn               | ASGI server                              |
-
-The main dependencies include FastAPI, SQLAlchemy, PostgreSQL/psycopg, PyJWT, Qdrant Client, and Sentence Transformers.
-
-## Architecture
-
-The application uses multiple security layers.
-
-### 1. Authentication
-
-Users authenticate through:
-
-```http
-POST /auth/token
-```
-
-The API generates a signed JWT containing authentication and role information.
-
-### 2. Tenant Isolation
-
-Every authenticated user belongs to a tenant.
-
-For example:
-
-```text
-Company A
-├── Alice - HR
-└── Bob - Employee
-
-Company B
-├── Charlie - HR
-└── David - Employee
-```
-
-The tenant is determined from the authenticated user rather than being supplied by the API caller.
-
-### 3. Qdrant Filtering
-
-Qdrant applies a mandatory tenant condition and ACL-related filtering before candidate documents are returned.
-
-```text
-tenant_id = authenticated_user.tenant_id
-       +
-role/user ACL match
-```
-
-### 4. PostgreSQL ACL Verification
-
-Qdrant filtering is not treated as the final security boundary.
-
-The application loads the current document ACL from PostgreSQL and verifies authorization again before a chunk is included in the LLM context.
-
-This provides an additional protection layer when permissions have changed.
-
-### 5. Retrieval Auditing
-
-Retrieval events are recorded in PostgreSQL.
-
-The audit table is designed to be append-only, with database protection against updates and deletes.
-
-## Security Model
-
-The project follows a **defense-in-depth** approach:
-
-```text
-Authentication
-      ↓
-Tenant Validation
-      ↓
-Vector Database Filtering
-      ↓
-Database ACL Verification
-      ↓
-Audit Logging
-      ↓
-LLM Context
-```
-
-If the Qdrant permissions become stale, the PostgreSQL ACL verification can still reject the unauthorized document.
-
-ACL changes are committed to PostgreSQL first and then synchronized to Qdrant.
-
-## API Endpoints
-
-| Method | Endpoint                              | Purpose                                            |
-| ------ | ------------------------------------- | -------------------------------------------------- |
-| POST   | `/auth/token`                         | Authenticate and issue JWT                         |
-| POST   | `/documents`                          | Create and index a document                        |
-| GET    | `/documents`                          | List tenant documents                              |
-| PUT    | `/documents/{document_id}/acl`        | Update document ACL                                |
-| POST   | `/chat`                               | Retrieve authorized context and generate an answer |
-| GET    | `/admin/audit/document/{document_id}` | View retrieval history                             |
-| GET    | `/health`                             | Health check                                       |
-
-## Local Development
-
-### Requirements
-
-* Python 3.10+
-* pip
-* Git
-* Optional: Docker Desktop
-* Optional: OpenAI-compatible LLM server/provider
-
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/YOUR_USERNAME/secure-multi-tenant-rag.git
-cd secure-multi-tenant-rag
-```
-
-### 2. Create a virtual environment
-
-Windows PowerShell:
+The app can run without Docker using SQLite and Qdrant's embedded local storage. From PowerShell:
 
 ```powershell
+cd "E:\Secure Multi tenent RAG"
 py -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements.txt
+.\.venv\Scripts\python seed_demo.py
 ```
 
-Activate it:
+The seed step creates the local database/vector collection and downloads the configured Sentence Transformers embedding model on its first run. Once that succeeds, the app and embedding model can run offline:
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
+$env:HF_HUB_OFFLINE = "1"
+$env:TRANSFORMERS_OFFLINE = "1"
+.\.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-### 3. Install dependencies
+Open `http://127.0.0.1:8000/docs` for the API. Local data is stored in `local.db` and `local_qdrant`. Demo credentials are `alice/hr`, `bob/employee`, `charlie/hr`, and `david/employee`. Alice and Bob belong to `company_a`; Charlie and David belong to `company_b`.
+
+Chat answer generation still requires an LLM. To enable it, set `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL` to a local OpenAI-compatible server or a hosted provider before starting the app. Without those settings, `POST /chat` responds with `503`; the rest of the local API and retrieval storage work without an LLM.
+
+## Start with Docker Compose
+
+1. Copy `.env.example` to `.env`, set a random `JWT_SECRET` and database password, and configure an OpenAI-compatible `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL`.
+2. Start the services:
+
+   ```powershell
+   docker compose up --build
+   ```
+
+3. In another terminal, seed demo identities:
+
+   ```powershell
+   docker compose exec api python seed_demo.py
+   ```
+
+   Demo credentials are `alice/hr`, `bob/employee`, `charlie/hr`, and `david/employee`. These are for local demonstrations only. Alice and Bob belong to `company_a`; Charlie and David belong to `company_b`.
+4. Sign in to get a bearer token:
+
+   ```powershell
+   $token = (Invoke-RestMethod -Method Post http://localhost:8000/auth/token `
+     -ContentType 'application/json' -Body '{"user_id":"alice","password":"hr"}'
+   ).access_token
+   ```
+5. Submit a document as an HR user:
+
+   ```powershell
+   Invoke-RestMethod -Method Post http://localhost:8000/documents `
+     -Headers @{ Authorization = "Bearer $token" } -ContentType 'application/json' `
+     -Body '{"document_id":"hr_salary_001","title":"Salary policy","content":"Confidential salary policy text.","allowed_roles":["hr"],"classification":"confidential"}'
+   ```
+
+   The API embeds and indexes submitted chunks. The document is persisted only after Qdrant indexing succeeds.
+6. Ask a question via `POST /chat` with `{"question":"Summarize the salary policy"}` and the bearer token.
+
+The first embedding request downloads the configured Sentence Transformers model. Chat returns `503` until the LLM environment settings point to an available OpenAI-compatible chat-completions API.
+
+## API
+
+- `POST /auth/token`: authenticate and issue a signed JWT.
+- `POST /documents`: create and index a tenant-local document (HR/admin).
+- `GET /documents`: list documents belonging to the caller's tenant.
+- `PUT /documents/{document_id}/acl`: replace ACLs and update Qdrant payloads (HR/admin).
+- `POST /chat`: retrieve authorized chunks, write audit events, and generate an answer.
+- `GET /admin/audit/document/{document_id}`: view document retrieval history (admin, tenant-scoped).
+- `GET /health`: liveness endpoint.
+
+## Authorization and revocation
+
+Qdrant applies a mandatory `tenant_id` condition and requires at least one role or explicit-user ACL match before returning candidates. The application then loads each document's current ACL from PostgreSQL and checks it before any chunk is included in the LLM context. A mismatch is rejected and logged as a security error.
+
+ACL updates commit to PostgreSQL first, then update the Qdrant payload. If Qdrant is unavailable, the API reports the error; stale Qdrant permissions cannot bypass the PostgreSQL check. The audit table has a PostgreSQL trigger that rejects updates and deletes.
+
+## Tests
 
 ```powershell
-python -m pip install -r requirements.txt
-```
-
-### 4. Seed demo data
-
-```powershell
-python seed_demo.py
-```
-
-The seed script creates demonstration users and documents for two separate tenants and indexes the demo documents into Qdrant.
-
-### 5. Start the API
-
-```powershell
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
-
-Open:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-FastAPI's Swagger UI provides interactive API documentation.
-
-## Docker Deployment
-
-The project includes Docker Compose configuration for:
-
-```text
-API
- │
- ├── PostgreSQL 16
- │
- └── Qdrant 1.12.4
-```
-
-The Compose configuration exposes the API on port `8000` and Qdrant on port `6333`. PostgreSQL and Qdrant health checks are also configured.
-
-Start the application:
-
-```powershell
-docker compose up --build
-```
-
-Then seed the demo data:
-
-```powershell
-docker compose exec api python seed_demo.py
-```
-
-## Environment Variables
-
-Create a `.env` file based on `.env.example`.
-
-```env
-DATABASE_URL=
-QDRANT_URL=
-JWT_SECRET=
-LLM_BASE_URL=
-LLM_API_KEY=
-LLM_MODEL=
-POSTGRES_PASSWORD=
-```
-
-Never commit real API keys, passwords, or production secrets.
-
-## Demo Users
-
-The seed script provides two tenants:
-
-### Company A
-
-```text
-alice / hr
-bob / employee
-```
-
-### Company B
-
-```text
-charlie / hr
-david / employee
-```
-
-These accounts are intended only for local demonstration.
-
-## Example Workflow
-
-### 1. Authenticate
-
-```http
-POST /auth/token
-```
-
-Receive:
-
-```text
-Bearer JWT
-```
-
-### 2. Create a document
-
-An authorized HR/admin user can submit a document.
-
-```text
-Document
-   ↓
-Chunking
-   ↓
-Sentence Transformer Embedding
-   ↓
-Qdrant Index
-```
-
-### 3. Ask a question
-
-```http
-POST /chat
-```
-
-The system:
-
-```text
-Question
-   ↓
-Authentication
-   ↓
-Tenant identification
-   ↓
-Qdrant filtered retrieval
-   ↓
-PostgreSQL ACL verification
-   ↓
-Audit event
-   ↓
-Authorized context
-   ↓
-LLM
-   ↓
-Answer
-```
-
-## Testing
-
-Install pytest:
-
-```powershell
-pip install pytest
-```
-
-Run:
-
-```powershell
+pip install -r requirements.txt pytest
 pytest -q
 ```
 
-The test suite covers areas including:
+The tests cover role/user ACL matching, tenant isolation, revocation decisions, and chunk overlap. End-to-end tests against live PostgreSQL, Qdrant, the embedding model, and an LLM require those services to be running and are not simulated by the unit suite.
 
-* Role/user ACL matching
-* Tenant isolation
-* Authorization revocation decisions
-* Chunk overlap
+## Production hardening
 
-End-to-end testing requires the relevant external services to be running.
-
-## Production Considerations
-
-Before production deployment:
-
-* Replace all demo credentials
-* Use strong production secrets
-* Enable TLS
-* Add rate limiting
-* Add request-size limits
-* Restrict document ingestion and ACL management
-* Use database migrations
-* Add reliable Qdrant synchronization/retry mechanisms
-* Configure audit-data retention
-* Add integration tests
-* Measure retrieval leakage, latency, filtering overhead, and revocation delay
-
-These items are intentionally listed as hardening requirements rather than claiming that they are already implemented.
-
-## Project Structure
-
-```text
-secure-multi-tenant-rag/
-│
-├── app/
-│   ├── auth/
-│   ├── ingestion/
-│   ├── models/
-│   ├── retrieval/
-│   └── main.py
-│
-├── tests/
-│
-├── seed_demo.py
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt
-├── .env.example
-├── .gitignore
-└── README.md
-```
-
-## Why This Project?
-
-This project demonstrates how RAG systems can be designed with **authorization and tenant isolation as first-class components**, rather than treating retrieval as independent from application security.
-
-It is particularly relevant to:
-
-* Enterprise RAG
-* Secure AI assistants
-* Multi-tenant SaaS platforms
-* Document intelligence systems
-* Enterprise knowledge bases
-* AI security
-* Access-controlled semantic search
-
-## Future Improvements
-
-* OAuth2 / enterprise identity integration
-* More granular document permissions
-* RBAC + ABAC combination
-* Encryption at rest
-* API rate limiting
-* Background indexing jobs
-* Distributed task queues
-* Observability dashboard
-* Retrieval evaluation
-* Security/leakage benchmark suite
-* Production Kubernetes deployment
-* Advanced LLM provider support
-
-## License
-
-Add the license that matches how you want to distribute the project.
-
----
-
-**Built with Python, FastAPI, PostgreSQL, Qdrant, Sentence Transformers, JWT, and Docker.**
+- Replace demo passwords and development secrets; manage secrets outside source control.
+- Use TLS, rate limits, request-size limits, and a production database role restricted from modifying/deleting audit rows.
+- Restrict document ingestion and ACL management to trusted operators; add malware/content checks as appropriate.
+- Use migrations for schema changes and an outbox/retry strategy for reliable Qdrant synchronization.
+- Configure retention and privacy controls for stored retrieval queries.
+- Add integration tests and measure leakage, latency, filtering overhead, and revocation delay against the deployed services; do not claim unmeasured metrics.
